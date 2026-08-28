@@ -1,1724 +1,628 @@
-// ============================================================
-// GALAXY LIBRARY
-// Supabase + Google Authentication
-// ============================================================
+/*
+  Galaxy Library
+  ------------------------------------------------------------
+  Public:
+    - Can view/search/filter books.
+  Librarian:
+    - Must sign in with Google.
+    - Only raminbaandit4@gmail.com is treated as librarian.
+    - Can add, borrow, return, and delete books.
 
-const SUPABASE_URL =
-    "https://etxezwalaxywjdvrojc.supabase.co";
+  IMPORTANT:
+    Use the Supabase publishable/anon key here, never the service_role key.
+*/
 
-const SUPABASE_ANON_KEY =
-    "sb_publishable_sXSm5tjEOyVRrwYHdh2fVw_DZ26OX0l";
+const SUPABASE_URL = "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE";
+const SUPABASE_ANON_KEY = "PASTE_YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY_HERE";
 
-const LIBRARIAN_EMAIL =
-    "raminbaandit4@gmail.com";
+const LIBRARIAN_EMAIL = "raminbaandit4@gmail.com";
 
+const isConfigured =
+  !SUPABASE_URL.includes("PASTE_YOUR") &&
+  !SUPABASE_ANON_KEY.includes("PASTE_YOUR");
 
-// ============================================================
-// SUPABASE
-// ============================================================
-
-if (!window.supabase) {
-    console.error("Supabase library was not loaded.");
-    throw new Error("Supabase library missing.");
-}
-
-const db = window.supabase.createClient(
-    SUPABASE_URL,
-    SUPABASE_ANON_KEY
-);
-
-
-// ============================================================
-// STATE
-// ============================================================
+let db = null;
+let currentUser = null;
+let isLibrarian = false;
 
 let books = [];
-
-let loans = [];
-
-let currentUser = null;
-
-let currentProfile = null;
-
 let currentFilter = "all";
-
 let searchTerm = "";
-
 let pendingBorrowId = null;
 
+const $ = (id) => document.getElementById(id);
 
-// ============================================================
-// DOM
-// ============================================================
+const configBanner = $("configBanner");
+const loginBanner = $("loginBanner");
+const authArea = $("authArea");
+const bookGrid = $("bookGrid");
+const addModal = $("addModal");
+const borrowModal = $("borrowModal");
 
-const bookGrid =
-    document.getElementById("bookGrid");
+document.addEventListener("DOMContentLoaded", init);
 
-const addModal =
-    document.getElementById("addModal");
+async function init() {
+  buildStars();
+  bindUI();
 
-const borrowModal =
-    document.getElementById("borrowModal");
+  if (!isConfigured) {
+    configBanner.classList.add("show");
+    bookGrid.innerHTML =
+      '<div class="empty"><div class="glyph">⚠</div>กรุณาตั้งค่า Supabase ใน script.js ก่อน</div>';
+    updateAuthUI(null);
+    return;
+  }
 
-const toast =
-    document.getElementById("toast");
+  if (!window.supabase) {
+    configBanner.classList.add("show");
+    configBanner.innerHTML =
+      "⚠️ <b>โหลด Supabase ไม่สำเร็จ</b><br>ตรวจสอบอินเทอร์เน็ตหรือ CDN ใน index.html";
+    return;
+  }
 
+  db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ============================================================
-// STARFIELD
-// ============================================================
+  db.auth.onAuthStateChange((_event, session) => {
+    // Do not await Supabase calls directly inside this callback.
+    setTimeout(() => handleSession(session), 0);
+  });
 
-function buildStars() {
+  const { data, error } = await db.auth.getSession();
 
-    const container =
-        document.getElementById("stars");
+  if (error) {
+    showToast("ตรวจสอบเซสชันไม่สำเร็จ: " + error.message, true);
+  }
 
-    if (!container) return;
+  await handleSession(data?.session ?? null);
+  await fetchBooks();
+}
 
-    let html = "";
+async function handleSession(session) {
+  currentUser = session?.user ?? null;
 
-    for (let i = 0; i < 90; i++) {
+  const email = currentUser?.email?.trim().toLowerCase() ?? "";
+  isLibrarian = email === LIBRARIAN_EMAIL.toLowerCase();
 
-        const size =
-            Math.random() * 2.4 + 0.6;
+  updateAuthUI(currentUser);
+  updateLibrarianUI();
 
-        html += `
-            <div class="twinkle"
-                style="
-                    width:${size}px;
-                    height:${size}px;
-                    top:${Math.random() * 100}%;
-                    left:${Math.random() * 100}%;
-                    animation-delay:${(
-                        Math.random() * 4
-                    ).toFixed(2)}s;
-                    animation-duration:${(
-                        3 + Math.random() * 4
-                    ).toFixed(2)}s;
-                ">
-            </div>
-        `;
+  if (currentUser && !isLibrarian) {
+    showToast("บัญชีนี้เข้าสู่ระบบแล้ว แต่ไม่ใช่บัญชี Librarian", true);
+  }
+
+  if (db) {
+    await fetchBooks();
+  }
+}
+
+function bindUI() {
+  $("searchInput").addEventListener("input", (event) => {
+    searchTerm = event.target.value.trim().toLowerCase();
+    render();
+  });
+
+  document.querySelectorAll(".chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll(".chip").forEach((x) => x.classList.remove("active"));
+      chip.classList.add("active");
+      currentFilter = chip.dataset.filter;
+      render();
+    });
+  });
+
+  $("loginButton").addEventListener("click", signInWithGoogle);
+
+  $("openAddModal").addEventListener("click", () => {
+    if (!requireLibrarian()) return;
+    openModal(addModal);
+    $("newTitle").focus();
+  });
+
+  $("confirmAdd").addEventListener("click", submitAddBook);
+  $("confirmBorrow").addEventListener("click", submitBorrow);
+
+  document.querySelectorAll("[data-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      closeModal($(button.dataset.close));
+    });
+  });
+
+  [addModal, borrowModal].forEach((modal) => {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal(modal);
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeModal(addModal);
+      closeModal(borrowModal);
     }
-
-    for (let i = 0; i < 3; i++) {
-
-        html += `
-            <div class="shooting-star"
-                style="
-                    top:${5 + Math.random() * 40}%;
-                    left:${50 + Math.random() * 40}%;
-                    animation-delay:${(
-                        i * 3.2
-                    ).toFixed(2)}s;
-                ">
-            </div>
-        `;
-    }
-
-    container.innerHTML = html;
+  });
 }
 
-buildStars();
+function updateAuthUI(user) {
+  if (!user) {
+    authArea.innerHTML =
+      '<button class="btn-login" id="headerLoginButton" type="button">Google Login</button>';
 
+    $("headerLoginButton").addEventListener("click", signInWithGoogle);
 
-// ============================================================
-// TOAST
-// ============================================================
+    $("loginBanner").classList.remove("hidden");
+    $("loginButton").classList.remove("hidden");
+    return;
+  }
 
-function showToast(message, error = false) {
+  const email = escapeHtml(user.email || "");
+  const name = escapeHtml(
+    user.user_metadata?.full_name ||
+    user.user_metadata?.name ||
+    user.email ||
+    "Google User"
+  );
 
-    if (!toast) return;
+  const avatar = user.user_metadata?.avatar_url
+    ? `<img class="auth-avatar" src="${escapeAttribute(user.user_metadata.avatar_url)}" alt="">`
+    : "";
 
-    toast.textContent = message;
+  authArea.innerHTML = `
+    <div class="user-pill">
+      ${avatar}
+      <span>${name}${isLibrarian ? " · Librarian" : ""}</span>
+    </div>
+    <button class="btn-logout" id="logoutButton" type="button">ออกจากระบบ</button>
+  `;
 
-    toast.className =
-        "toast show" + (error ? " err" : "");
+  $("logoutButton").addEventListener("click", signOut);
 
-    setTimeout(() => {
-
-        toast.classList.remove("show");
-
-    }, 3000);
+  $("loginBanner").classList.toggle("hidden", isLibrarian);
+  if (!isLibrarian) {
+    $("loginButton").textContent = "เข้าสู่ระบบด้วยบัญชี Librarian";
+  }
 }
 
+function updateLibrarianUI() {
+  document.querySelectorAll(".librarian-only").forEach((element) => {
+    element.classList.toggle("hidden", !isLibrarian);
+  });
 
-// ============================================================
-// AUTH UI
-// ============================================================
-
-function createAuthUI() {
-
-    const header =
-        document.querySelector("header");
-
-    if (!header) return;
-
-    if (document.getElementById("authPanel"))
-        return;
-
-    const panel =
-        document.createElement("div");
-
-    panel.id = "authPanel";
-
-    panel.innerHTML = `
-        <div id="authLoggedOut">
-
-            <button
-                id="googleLoginButton"
-                class="auth-button"
-                type="button">
-
-                <span class="google-icon">G</span>
-                Sign in with Google
-
-            </button>
-
-        </div>
-
-        <div
-            id="authLoggedIn"
-            style="display:none;">
-
-            <div class="auth-user">
-
-                <div>
-                    <div
-                        id="authUserName"
-                        class="auth-user-name">
-                    </div>
-
-                    <div
-                        id="authUserEmail"
-                        class="auth-user-email">
-                    </div>
-
-                    <span
-                        id="authUserRole"
-                        class="auth-role">
-                    </span>
-                </div>
-
-                <button
-                    id="googleLogoutButton"
-                    class="auth-logout"
-                    type="button">
-
-                    Sign out
-
-                </button>
-
-            </div>
-
-        </div>
-    `;
-
-    header.appendChild(panel);
-
-
-    document
-        .getElementById("googleLoginButton")
-        .addEventListener(
-            "click",
-            signInWithGoogle
-        );
-
-
-    document
-        .getElementById("googleLogoutButton")
-        .addEventListener(
-            "click",
-            signOut
-        );
+  render();
 }
-
-
-// ============================================================
-// AUTH
-// ============================================================
 
 async function signInWithGoogle() {
+  if (!db) {
+    showToast("ยังไม่ได้เชื่อมต่อ Supabase", true);
+    return;
+  }
 
-    try {
+  const redirectTo = window.location.origin + window.location.pathname;
 
-        const redirectUrl =
-            window.location.origin +
-            window.location.pathname;
-
-        const { error } =
-            await db.auth.signInWithOAuth({
-
-                provider: "google",
-
-                options: {
-                    redirectTo: redirectUrl
-                }
-
-            });
-
-        if (error)
-            throw error;
-
-    } catch (error) {
-
-        console.error(error);
-
-        showToast(
-            "เข้าสู่ระบบไม่สำเร็จ: " +
-            error.message,
-            true
-        );
+  const { error } = await db.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo
     }
-}
+  });
 
+  if (error) {
+    showToast("เข้าสู่ระบบไม่สำเร็จ: " + error.message, true);
+  }
+}
 
 async function signOut() {
+  if (!db) return;
 
-    const { error } =
-        await db.auth.signOut();
+  const { error } = await db.auth.signOut();
 
-    if (error) {
+  if (error) {
+    showToast("ออกจากระบบไม่สำเร็จ: " + error.message, true);
+    return;
+  }
 
-        showToast(
-            "ออกจากระบบไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        return;
-    }
-
-    showToast("ออกจากระบบแล้ว");
-
-    currentUser = null;
-
-    currentProfile = null;
-
-    loans = [];
-
-    updateAuthUI();
-
-    render();
+  showToast("ออกจากระบบแล้ว");
 }
 
+function requireLibrarian() {
+  if (!currentUser) {
+    showToast("กรุณาเข้าสู่ระบบด้วย Google ก่อน", true);
+    return false;
+  }
 
-// ============================================================
-// LOAD PROFILE
-// ============================================================
+  if (!isLibrarian) {
+    showToast("บัญชีนี้ไม่มีสิทธิ์ Librarian", true);
+    return false;
+  }
 
-async function loadProfile(user) {
-
-    if (!user) {
-
-        currentProfile = null;
-
-        return;
-    }
-
-
-    const { data, error } =
-        await db
-            .from("profiles")
-            .select("*")
-            .eq("id", user.id)
-            .maybeSingle();
-
-
-    if (error) {
-
-        console.error(
-            "Profile error:",
-            error
-        );
-
-        currentProfile = {
-
-            id: user.id,
-
-            email:
-                user.email || "",
-
-            display_name:
-                user.user_metadata?.full_name ||
-                user.user_metadata?.name ||
-                user.email,
-
-            role:
-                user.email?.toLowerCase() ===
-                LIBRARIAN_EMAIL
-                    ? "librarian"
-                    : "user"
-
-        };
-
-        return;
-    }
-
-
-    currentProfile = data;
+  return true;
 }
 
-
-// ============================================================
-// AUTH UI UPDATE
-// ============================================================
-
-function updateAuthUI() {
-
-    const loggedOut =
-        document.getElementById(
-            "authLoggedOut"
-        );
-
-    const loggedIn =
-        document.getElementById(
-            "authLoggedIn"
-        );
-
-
-    const addButton =
-        document.getElementById(
-            "openAddModal"
-        );
-
-
-    if (!currentUser) {
-
-        if (loggedOut)
-            loggedOut.style.display = "block";
-
-        if (loggedIn)
-            loggedIn.style.display = "none";
-
-
-        if (addButton) {
-
-            addButton.style.display =
-                "none";
-
-        }
-
-        return;
-    }
-
-
-    if (loggedOut)
-        loggedOut.style.display = "none";
-
-
-    if (loggedIn)
-        loggedIn.style.display = "block";
-
-
-    const name =
-        document.getElementById(
-            "authUserName"
-        );
-
-    const email =
-        document.getElementById(
-            "authUserEmail"
-        );
-
-    const role =
-        document.getElementById(
-            "authUserRole"
-        );
-
-
-    if (name) {
-
-        name.textContent =
-            currentProfile?.display_name ||
-            currentUser.user_metadata?.full_name ||
-            currentUser.email ||
-            "Google User";
-
-    }
-
-
-    if (email) {
-
-        email.textContent =
-            currentUser.email || "";
-
-    }
-
-
-    const librarian =
-        isLibrarian();
-
-
-    if (role) {
-
-        role.textContent =
-            librarian
-                ? "👑 Librarian"
-                : "📚 Library User";
-
-        role.className =
-            "auth-role " +
-            (librarian
-                ? "librarian"
-                : "user");
-
-    }
-
-
-    if (addButton) {
-
-        addButton.style.display =
-            librarian
-                ? ""
-                : "none";
-
-    }
-}
-
-
-// ============================================================
-// ROLE
-// ============================================================
-
-function isLibrarian() {
-
-    if (!currentUser)
-        return false;
-
-
-    return (
-        currentProfile?.role === "librarian" ||
-        currentUser.email?.toLowerCase() ===
-            LIBRARIAN_EMAIL
-    );
-}
-
-
-// ============================================================
-// BOOKS
-// ============================================================
+/* -------------------- Database -------------------- */
 
 async function fetchBooks() {
+  if (!db) return;
 
-    const { data, error } =
-        await db
-            .from("books")
-            .select("*")
-            .order(
-                "created_at",
-                {
-                    ascending: false
-                }
-            );
+  bookGrid.innerHTML =
+    '<div class="loading">กำลังโหลดข้อมูลจากจักรวาล...</div>';
 
+  const { data, error } = await db
+    .from("books")
+    .select("id,title,author,category,status,created_at")
+    .order("created_at", { ascending: false });
 
-    if (error) {
+  if (error) {
+    bookGrid.innerHTML =
+      '<div class="empty"><div class="glyph">⚠</div>โหลดหนังสือไม่สำเร็จ</div>';
+    showToast("โหลดหนังสือผิดพลาด: " + error.message, true);
+    return;
+  }
 
-        console.error(error);
-
-        showToast(
-            "โหลดหนังสือไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        books = [];
-
-        render();
-
-        return;
-    }
-
-
-    books = data || [];
-
-    await fetchLoans();
-
-    render();
+  books = data ?? [];
+  render();
 }
 
+async function addBook(title, author, category) {
+  if (!requireLibrarian()) return;
 
-// ============================================================
-// LOANS
-// ============================================================
-
-async function fetchLoans() {
-
-    if (!currentUser) {
-
-        loans = [];
-
-        return;
-    }
-
-
-    let query =
-        db
-            .from("loans")
-            .select("*")
-            .is("returned_at", null);
-
-
-    if (!isLibrarian()) {
-
-        query =
-            query.eq(
-                "user_id",
-                currentUser.id
-            );
-    }
-
-
-    const { data, error } =
-        await query;
-
-
-    if (error) {
-
-        console.error(error);
-
-        loans = [];
-
-        return;
-    }
-
-
-    loans = data || [];
-}
-
-
-// ============================================================
-// ADD BOOK
-// ============================================================
-
-async function addBook(
+  const { error } = await db.from("books").insert({
     title,
-    author,
-    category
-) {
+    author: author || null,
+    category: category || null,
+    status: "available"
+  });
 
-    if (!isLibrarian()) {
+  if (error) {
+    showToast("เพิ่มหนังสือผิดพลาด: " + error.message, true);
+    return;
+  }
 
-        showToast(
-            "เฉพาะ Librarian เท่านั้น",
-            true
-        );
+  closeModal(addModal);
+  clearAddForm();
+  showToast(`เพิ่มหนังสือ "${title}" เรียบร้อย`);
+  await fetchBooks();
+}
 
-        return;
-    }
+async function borrowBook(id, name, contact) {
+  if (!requireLibrarian()) return;
 
+  const book = books.find((item) => item.id === id);
 
-    const { error } =
-        await db
-            .from("books")
-            .insert({
+  if (!book) {
+    showToast("ไม่พบหนังสือเล่มนี้", true);
+    return;
+  }
 
-                title,
-                author:
-                    author || null,
-
-                category:
-                    category || null,
-
-                status:
-                    "available"
-
-            });
-
-
-    if (error) {
-
-        console.error(error);
-
-        showToast(
-            "เพิ่มหนังสือไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        return;
-    }
-
-
-    showToast(
-        `เพิ่ม "${title}" เรียบร้อยแล้ว`
-    );
-
-
+  if (book.status !== "available") {
+    showToast("หนังสือเล่มนี้ถูกยืมไปแล้ว", true);
+    closeModal(borrowModal);
     await fetchBooks();
-}
+    return;
+  }
 
+  // Create a loan record first.
+  const { error: loanError } = await db.from("loans").insert({
+    book_id: id,
+    borrower_name: name,
+    borrower_contact: contact || null,
+    borrowed_by: currentUser.id
+  });
 
-// ============================================================
-// BORROW
-// ============================================================
+  if (loanError) {
+    showToast("บันทึกการยืมผิดพลาด: " + loanError.message, true);
+    return;
+  }
 
-async function borrowBook(
-    id,
-    name,
-    contact
-) {
+  // Then change the public book status.
+  const { error: bookError } = await db
+    .from("books")
+    .update({ status: "borrowed" })
+    .eq("id", id)
+    .eq("status", "available");
 
-    if (!currentUser) {
-
-        showToast(
-            "กรุณาเข้าสู่ระบบก่อนยืมหนังสือ",
-            true
-        );
-
-        return;
-    }
-
-
-    const { data, error } =
-        await db.rpc(
-            "borrow_book",
-            {
-                p_book_id: id,
-
-                p_borrower_name:
-                    name,
-
-                p_borrower_contact:
-                    contact || null
-            }
-        );
-
-
-    if (error) {
-
-        console.error(error);
-
-        showToast(
-            "ยืมหนังสือไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        return;
-    }
-
-
-    console.log(
-        "Borrow result:",
-        data
-    );
-
-
-    showToast(
-        "ยืมหนังสือสำเร็จ 📚"
-    );
-
-
+  if (bookError) {
+    // The loan remains, so tell the librarian instead of silently hiding it.
+    showToast("บันทึกการยืมแล้ว แต่เปลี่ยนสถานะหนังสือไม่สำเร็จ: " + bookError.message, true);
     await fetchBooks();
+    return;
+  }
+
+  closeModal(borrowModal);
+  clearBorrowForm();
+  showToast("ยืมหนังสือสำเร็จ");
+  await fetchBooks();
 }
 
+async function returnBook(id) {
+  if (!requireLibrarian()) return;
 
-// ============================================================
-// RETURN
-// ============================================================
+  const { data: loan, error: loanFindError } = await db
+    .from("loans")
+    .select("id")
+    .eq("book_id", id)
+    .is("returned_at", null)
+    .order("borrowed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-async function returnLoan(
-    loanId
-) {
+  if (loanFindError) {
+    showToast("ค้นหารายการยืมผิดพลาด: " + loanFindError.message, true);
+    return;
+  }
 
-    if (!currentUser) {
-
-        showToast(
-            "กรุณาเข้าสู่ระบบก่อน",
-            true
-        );
-
-        return;
-    }
-
-
-    const { error } =
-        await db.rpc(
-            "return_book",
-            {
-                p_loan_id: loanId
-            }
-        );
-
-
-    if (error) {
-
-        console.error(error);
-
-        showToast(
-            "คืนหนังสือไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        return;
-    }
-
-
-    showToast(
-        "คืนหนังสือเรียบร้อยแล้ว 🔄"
-    );
-
-
+  if (!loan) {
+    showToast("ไม่พบรายการยืมที่ยังไม่คืน", true);
     await fetchBooks();
-}
+    return;
+  }
 
+  const { error: loanError } = await db
+    .from("loans")
+    .update({ returned_at: new Date().toISOString() })
+    .eq("id", loan.id);
 
-// ============================================================
-// DELETE BOOK
-// ============================================================
+  if (loanError) {
+    showToast("บันทึกการคืนผิดพลาด: " + loanError.message, true);
+    return;
+  }
 
-async function deleteBook(
-    id
-) {
+  const { error: bookError } = await db
+    .from("books")
+    .update({ status: "available" })
+    .eq("id", id);
 
-    if (!isLibrarian()) {
-
-        showToast(
-            "เฉพาะ Librarian เท่านั้น",
-            true
-        );
-
-        return;
-    }
-
-
-    if (
-        !confirm(
-            "ลบหนังสือเล่มนี้ออกจากระบบใช่ไหม?"
-        )
-    ) {
-        return;
-    }
-
-
-    const { error } =
-        await db
-            .from("books")
-            .delete()
-            .eq("id", id);
-
-
-    if (error) {
-
-        console.error(error);
-
-        showToast(
-            "ลบหนังสือไม่สำเร็จ: " +
-            error.message,
-            true
-        );
-
-        return;
-    }
-
-
-    showToast(
-        "ลบหนังสือแล้ว"
-    );
-
-
+  if (bookError) {
+    showToast("บันทึกการคืนแล้ว แต่เปลี่ยนสถานะหนังสือไม่สำเร็จ: " + bookError.message, true);
     await fetchBooks();
+    return;
+  }
+
+  showToast("คืนหนังสือแล้ว");
+  await fetchBooks();
 }
 
+async function deleteBook(id) {
+  if (!requireLibrarian()) return;
 
-// ============================================================
-// FIND ACTIVE LOAN FOR BOOK
-// ============================================================
+  const book = books.find((item) => item.id === id);
+  const title = book?.title || "หนังสือเล่มนี้";
 
-function getActiveLoan(bookId) {
+  if (!confirm(`ลบ "${title}" ออกจากระบบใช่ไหม?`)) return;
 
-    return loans.find(
-        loan =>
-            loan.book_id === bookId &&
-            !loan.returned_at
-    );
+  const { error } = await db.from("books").delete().eq("id", id);
+
+  if (error) {
+    showToast("ลบหนังสือผิดพลาด: " + error.message, true);
+    return;
+  }
+
+  showToast("ลบหนังสือแล้ว");
+  await fetchBooks();
 }
 
-
-// ============================================================
-// RENDER
-// ============================================================
+/* -------------------- Rendering -------------------- */
 
 function render() {
-
-    if (!bookGrid)
-        return;
-
-
-    const filtered =
-        books.filter(book => {
-
-            const filterMatch =
-                currentFilter === "all" ||
-                book.status === currentFilter;
-
-
-            const title =
-                (
-                    book.title || ""
-                ).toLowerCase();
-
-
-            const author =
-                (
-                    book.author || ""
-                ).toLowerCase();
-
-
-            const category =
-                (
-                    book.category || ""
-                ).toLowerCase();
-
-
-            const searchMatch =
-                !searchTerm ||
-
-                title.includes(
-                    searchTerm
-                ) ||
-
-                author.includes(
-                    searchTerm
-                ) ||
-
-                category.includes(
-                    searchTerm
-                );
-
-
-            return (
-                filterMatch &&
-                searchMatch
-            );
-        });
-
-
-    document.getElementById(
-        "statTotal"
-    ).textContent =
-        books.length;
-
-
-    document.getElementById(
-        "statAvailable"
-    ).textContent =
-        books.filter(
-            b =>
-                b.status ===
-                "available"
-        ).length;
-
-
-    document.getElementById(
-        "statBorrowed"
-    ).textContent =
-        books.filter(
-            b =>
-                b.status ===
-                "borrowed"
-        ).length;
-
-
-    if (filtered.length === 0) {
-
-        bookGrid.innerHTML = `
-            <div class="empty">
-
-                <div class="glyph">
-                    ✦ ⋆ ✦
-                </div>
-
-                ไม่พบหนังสือที่ตรงกับเงื่อนไข
-
-            </div>
-        `;
-
-        return;
-    }
-
-
-    bookGrid.innerHTML =
-        filtered.map(
-            book =>
-                renderBookCard(book)
-        ).join("");
-}
-
-
-// ============================================================
-// BOOK CARD
-// ============================================================
-
-function renderBookCard(
-    book
-) {
-
-    const available =
-        book.status === "available";
-
-
-    const loan =
-        getActiveLoan(book.id);
-
-
-    let actionButton = "";
-
-
-    if (available) {
-
-        if (currentUser) {
-
-            actionButton = `
-                <button
-                    class="btn-borrow"
-                    onclick="openBorrowModal('${book.id}')">
-
-                    ยืมหนังสือ
-
-                </button>
-            `;
-
-        } else {
-
-            actionButton = `
-                <button
-                    class="btn-borrow"
-                    onclick="requireLogin()">
-
-                    เข้าสู่ระบบเพื่อยืม
-
-                </button>
-            `;
-        }
-
-    } else {
-
-        if (
-            currentUser &&
-            loan &&
-            (
-                loan.user_id ===
-                    currentUser.id ||
-                isLibrarian()
-            )
-        ) {
-
-            actionButton = `
-                <button
-                    class="btn-return"
-                    onclick="returnLoan('${loan.id}')">
-
-                    คืนหนังสือ
-
-                </button>
-            `;
-
-        } else if (isLibrarian()) {
-
-            actionButton = `
-                <button
-                    class="btn-return"
-                    onclick="returnLoan('${loan?.id || ""}')"
-                    ${loan ? "" : "disabled"}>
-
-                    จัดการคืน
-
-                </button>
-            `;
-
-        } else {
-
-            actionButton = `
-                <button
-                    class="btn-borrow"
-                    disabled>
-
-                    ถูกยืมอยู่
-
-                </button>
-            `;
-        }
-    }
-
-
-    const deleteButton =
-        isLibrarian()
-            ? `
-                <button
-                    class="btn-del"
-                    onclick="deleteBook('${book.id}')"
-                    title="ลบ">
-
-                    ✕
-
-                </button>
-            `
-            : "";
-
-
-    let loanInfo = "";
-
-
-    // Only librarian can see borrower information.
-    if (
-        !available &&
-        isLibrarian() &&
-        loan
-    ) {
-
-        loanInfo = `
-            <div class="meta">
-
-                ผู้ยืม:
-                <span>
-                    ${escapeHtml(
-                        loan.borrower_name
-                    )}
-                </span>
-
-                <br>
-
-                ติดต่อ:
-                <span>
-                    ${escapeHtml(
-                        loan.borrower_contact ||
-                        "-"
-                    )}
-                </span>
-
-                <br>
-
-                วันที่ยืม:
-                <span>
-                    ${fmtDate(
-                        loan.borrowed_at
-                    )}
-                </span>
-
-            </div>
-        `;
-
-    } else if (
-        !available
-    ) {
-
-        loanInfo = `
-            <div class="meta">
-
-                สถานะ:
-                <span>
-                    หนังสือกำลังถูกยืม
-                </span>
-
-            </div>
-        `;
-    }
-
+  const filtered = books.filter((book) => {
+    const matchFilter =
+      currentFilter === "all" || book.status === currentFilter;
+
+    const title = (book.title || "").toLowerCase();
+    const author = (book.author || "").toLowerCase();
+
+    const matchSearch =
+      !searchTerm ||
+      title.includes(searchTerm) ||
+      author.includes(searchTerm);
+
+    return matchFilter && matchSearch;
+  });
+
+  $("statTotal").textContent = books.length;
+  $("statAvailable").textContent =
+    books.filter((book) => book.status === "available").length;
+  $("statBorrowed").textContent =
+    books.filter((book) => book.status === "borrowed").length;
+
+  if (filtered.length === 0) {
+    bookGrid.innerHTML = `
+      <div class="empty">
+        <div class="glyph">✦ ⋆ ✦</div>
+        ${books.length === 0 ? "ยังไม่มีหนังสือในห้องสมุด" : "ไม่พบหนังสือที่ตรงกับเงื่อนไข"}
+      </div>
+    `;
+    return;
+  }
+
+  bookGrid.innerHTML = filtered.map((book) => {
+    const available = book.status === "available";
+
+    const publicActions = available
+      ? isLibrarian
+        ? `<button class="btn-borrow" data-action="borrow" data-id="${escapeAttribute(book.id)}">ยืมหนังสือ</button>`
+        : ""
+      : isLibrarian
+        ? `<button class="btn-return" data-action="return" data-id="${escapeAttribute(book.id)}">คืนหนังสือ</button>`
+        : "";
+
+    const deleteButton = isLibrarian
+      ? `<button class="btn-del" data-action="delete" data-id="${escapeAttribute(book.id)}" title="ลบ">✕</button>`
+      : "";
 
     return `
-        <div class="card">
+      <div class="card">
+        <span class="badge ${available ? "available" : "borrowed"}">
+          ${available ? "พร้อมให้ยืม" : "ถูกยืมอยู่"}
+        </span>
 
-            <span
-                class="badge ${
-                    available
-                        ? "available"
-                        : "borrowed"
-                }">
+        <h3>${escapeHtml(book.title)}</h3>
 
-                ${
-                    available
-                        ? "พร้อมให้ยืม"
-                        : "ถูกยืมอยู่"
-                }
-
-            </span>
-
-
-            <h3>
-                ${escapeHtml(
-                    book.title
-                )}
-            </h3>
-
-
-            <div class="author">
-
-                ${escapeHtml(
-                    book.author ||
-                    "ไม่ระบุผู้แต่ง"
-                )}
-
-                ${
-                    book.category
-                        ? " · " +
-                          escapeHtml(
-                              book.category
-                          )
-                        : ""
-                }
-
-            </div>
-
-
-            ${loanInfo}
-
-
-            <div class="actions">
-
-                ${actionButton}
-
-                ${deleteButton}
-
-            </div>
-
+        <div class="author">
+          ${escapeHtml(book.author || "ไม่ระบุผู้แต่ง")}
+          ${book.category ? " · " + escapeHtml(book.category) : ""}
         </div>
+
+        ${
+          available
+            ? `<div class="meta">สถานะ: <span>พร้อมให้ยืม</span></div>`
+            : `<div class="meta">สถานะ: <span>กำลังถูกยืม</span></div>`
+        }
+
+        ${
+          isLibrarian
+            ? `<div class="actions">${publicActions}${deleteButton}</div>`
+            : ""
+        }
+      </div>
     `;
+  }).join("");
+
+  bookGrid.querySelectorAll("[data-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      const action = button.dataset.action;
+
+      if (action === "borrow") openBorrowModal(id);
+      if (action === "return") returnBook(id);
+      if (action === "delete") deleteBook(id);
+    });
+  });
 }
 
+/* -------------------- Modals -------------------- */
 
-// ============================================================
-// REQUIRE LOGIN
-// ============================================================
-
-window.requireLogin =
-    function () {
-
-        showToast(
-            "กรุณาเข้าสู่ระบบด้วย Google ก่อน",
-            true
-        );
-
-        document
-            .getElementById(
-                "googleLoginButton"
-            )
-            ?.click();
-    };
-
-
-// ============================================================
-// DATE
-// ============================================================
-
-function fmtDate(
-    date
-) {
-
-    if (!date)
-        return "-";
-
-
-    return new Date(
-        date
-    ).toLocaleDateString(
-        "th-TH",
-        {
-            day: "numeric",
-            month: "short",
-            year: "numeric"
-        }
-    );
+function openModal(modal) {
+  modal.classList.add("show");
 }
 
-
-// ============================================================
-// ESCAPE HTML
-// ============================================================
-
-function escapeHtml(
-    value
-) {
-
-    return String(
-        value ?? ""
-    ).replace(
-        /[&<>"']/g,
-        character => ({
-            "&":
-                "&amp;",
-
-            "<":
-                "&lt;",
-
-            ">":
-                "&gt;",
-
-            '"':
-                "&quot;",
-
-            "'":
-                "&#39;"
-        })[character]
-    );
+function closeModal(modal) {
+  if (!modal) return;
+  modal.classList.remove("show");
 }
 
+function openBorrowModal(id) {
+  if (!requireLibrarian()) return;
 
-// ============================================================
-// ADD MODAL
-// ============================================================
+  const book = books.find((item) => item.id === id);
 
-function setupAddModal() {
+  if (!book) {
+    showToast("ไม่พบหนังสือเล่มนี้", true);
+    return;
+  }
 
-    const open =
-        document.getElementById(
-            "openAddModal"
-        );
-
-    const cancel =
-        document.getElementById(
-            "cancelAdd"
-        );
-
-    const confirmButton =
-        document.getElementById(
-            "confirmAdd"
-        );
-
-
-    if (open) {
-
-        open.onclick =
-            () => {
-
-                if (!isLibrarian()) {
-
-                    showToast(
-                        "เฉพาะ Librarian เท่านั้น",
-                        true
-                    );
-
-                    return;
-                }
-
-                addModal
-                    ?.classList
-                    .add("show");
-            };
-    }
-
-
-    if (cancel) {
-
-        cancel.onclick =
-            () => {
-
-                addModal
-                    ?.classList
-                    .remove("show");
-            };
-    }
-
-
-    if (confirmButton) {
-
-        confirmButton.onclick =
-            async () => {
-
-                const title =
-                    document
-                        .getElementById(
-                            "newTitle"
-                        )
-                        .value
-                        .trim();
-
-
-                const author =
-                    document
-                        .getElementById(
-                            "newAuthor"
-                        )
-                        .value
-                        .trim();
-
-
-                const category =
-                    document
-                        .getElementById(
-                            "newCategory"
-                        )
-                        .value
-                        .trim();
-
-
-                if (!title) {
-
-                    showToast(
-                        "กรุณากรอกชื่อหนังสือ",
-                        true
-                    );
-
-                    return;
-                }
-
-
-                await addBook(
-                    title,
-                    author,
-                    category
-                );
-
-
-                document
-                    .getElementById(
-                        "newTitle"
-                    )
-                    .value = "";
-
-
-                document
-                    .getElementById(
-                        "newAuthor"
-                    )
-                    .value = "";
-
-
-                document
-                    .getElementById(
-                        "newCategory"
-                    )
-                    .value = "";
-
-
-                addModal
-                    ?.classList
-                    .remove("show");
-            };
-    }
+  pendingBorrowId = id;
+  $("borrowBookName").textContent = `หนังสือ: ${book.title}`;
+  openModal(borrowModal);
+  $("borrowerName").focus();
 }
 
+async function submitAddBook() {
+  const title = $("newTitle").value.trim();
+  const author = $("newAuthor").value.trim();
+  const category = $("newCategory").value.trim();
 
-// ============================================================
-// BORROW MODAL
-// ============================================================
+  if (!title) {
+    showToast("กรุณากรอกชื่อหนังสือ", true);
+    $("newTitle").focus();
+    return;
+  }
 
-window.openBorrowModal =
-    function (bookId) {
-
-        if (!currentUser) {
-
-            requireLogin();
-
-            return;
-        }
-
-
-        pendingBorrowId =
-            bookId;
-
-
-        borrowModal
-            ?.classList
-            .add("show");
-    };
-
-
-function setupBorrowModal() {
-
-    const cancel =
-        document.getElementById(
-            "cancelBorrow"
-        );
-
-
-    const confirmButton =
-        document.getElementById(
-            "confirmBorrow"
-        );
-
-
-    if (cancel) {
-
-        cancel.onclick =
-            () => {
-
-                pendingBorrowId =
-                    null;
-
-                borrowModal
-                    ?.classList
-                    .remove("show");
-            };
-    }
-
-
-    if (confirmButton) {
-
-        confirmButton.onclick =
-            async () => {
-
-                const name =
-                    document
-                        .getElementById(
-                            "borrowerName"
-                        )
-                        .value
-                        .trim();
-
-
-                const contact =
-                    document
-                        .getElementById(
-                            "borrowerContact"
-                        )
-                        .value
-                        .trim();
-
-
-                if (!name) {
-
-                    showToast(
-                        "กรุณากรอกชื่อผู้ยืม",
-                        true
-                    );
-
-                    return;
-                }
-
-
-                if (!pendingBorrowId) {
-
-                    showToast(
-                        "ไม่พบหนังสือ",
-                        true
-                    );
-
-                    return;
-                }
-
-
-                confirmButton.disabled =
-                    true;
-
-
-                await borrowBook(
-                    pendingBorrowId,
-                    name,
-                    contact
-                );
-
-
-                confirmButton.disabled =
-                    false;
-
-
-                document
-                    .getElementById(
-                        "borrowerName"
-                    )
-                    .value = "";
-
-
-                document
-                    .getElementById(
-                        "borrowerContact"
-                    )
-                    .value = "";
-
-
-                pendingBorrowId =
-                    null;
-
-
-                borrowModal
-                    ?.classList
-                    .remove("show");
-            };
-    }
+  await addBook(title, author, category);
 }
 
+async function submitBorrow() {
+  if (!pendingBorrowId) return;
 
-// ============================================================
-// MODAL CLICK OUTSIDE
-// ============================================================
+  const name = $("borrowerName").value.trim();
+  const contact = $("borrowerContact").value.trim();
 
-[
-    addModal,
-    borrowModal
-].forEach(
-    modal => {
+  if (!name) {
+    showToast("กรุณากรอกชื่อผู้ยืม", true);
+    $("borrowerName").focus();
+    return;
+  }
 
-        if (!modal) return;
-
-        modal.addEventListener(
-            "click",
-            event => {
-
-                if (
-                    event.target ===
-                    modal
-                ) {
-
-                    modal.classList
-                        .remove("show");
-
-                }
-            }
-        );
-    }
-);
-
-
-// ============================================================
-// FILTERS
-// ============================================================
-
-document
-    .querySelectorAll(".chip")
-    .forEach(
-        chip => {
-
-            chip.addEventListener(
-                "click",
-                () => {
-
-                    document
-                        .querySelectorAll(
-                            ".chip"
-                        )
-                        .forEach(
-                            c =>
-                                c.classList
-                                    .remove(
-                                        "active"
-                                    )
-                        );
-
-
-                    chip.classList
-                        .add("active");
-
-
-                    currentFilter =
-                        chip.dataset.filter;
-
-
-                    render();
-                }
-            );
-        }
-    );
-
-
-// ============================================================
-// SEARCH
-// ============================================================
-
-const searchInput =
-    document.getElementById(
-        "searchInput"
-    );
-
-
-if (searchInput) {
-
-    searchInput.addEventListener(
-        "input",
-        event => {
-
-            searchTerm =
-                event.target.value
-                    .toLowerCase()
-                    .trim();
-
-            render();
-        }
-    );
+  await borrowBook(pendingBorrowId, name, contact);
+  pendingBorrowId = null;
 }
 
-
-// ============================================================
-// AUTH STATE
-// ============================================================
-
-async function handleAuthSession(
-    session
-) {
-
-    currentUser =
-        session?.user || null;
-
-
-    if (currentUser) {
-
-        await loadProfile(
-            currentUser
-        );
-
-    } else {
-
-        currentProfile =
-            null;
-    }
-
-
-    updateAuthUI();
-
-    await fetchBooks();
+function clearAddForm() {
+  $("newTitle").value = "";
+  $("newAuthor").value = "";
+  $("newCategory").value = "";
 }
 
-
-// ============================================================
-// AUTH LISTENER
-// ============================================================
-
-db.auth.onAuthStateChange(
-    async (
-        event,
-        session
-    ) => {
-
-        console.log(
-            "Auth event:",
-            event
-        );
-
-
-        await handleAuthSession(
-            session
-        );
-    }
-);
-
-
-// ============================================================
-// INITIALIZE
-// ============================================================
-
-async function initialize() {
-
-    createAuthUI();
-
-    setupAddModal();
-
-    setupBorrowModal();
-
-
-    const {
-        data,
-        error
-    } =
-        await db.auth.getSession();
-
-
-    if (error) {
-
-        console.error(error);
-
-        showToast(
-            "โหลด session ไม่สำเร็จ",
-            true
-        );
-    }
-
-
-    await handleAuthSession(
-        data?.session || null
-    );
+function clearBorrowForm() {
+  $("borrowerName").value = "";
+  $("borrowerContact").value = "";
+  $("borrowBookName").textContent = "";
+  pendingBorrowId = null;
 }
 
+/* -------------------- Helpers -------------------- */
 
-initialize();
+function fmtDate(value) {
+  if (!value) return "-";
+
+  return new Date(value).toLocaleDateString("th-TH", {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
+function showToast(message, isError = false) {
+  const toast = $("toast");
+
+  toast.textContent = message;
+  toast.className = "toast show" + (isError ? " err" : "");
+
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => {
+    toast.classList.remove("show");
+  }, 3000);
+}
+
+function buildStars() {
+  const container = $("stars");
+  let html = "";
+
+  for (let i = 0; i < 90; i++) {
+    const size = Math.random() * 2.4 + 0.6;
+
+    html += `
+      <div class="twinkle" style="
+        width:${size}px;
+        height:${size}px;
+        top:${Math.random() * 100}%;
+        left:${Math.random() * 100}%;
+        animation-delay:${(Math.random() * 4).toFixed(2)}s;
+        animation-duration:${(3 + Math.random() * 4).toFixed(2)}s;
+      "></div>
+    `;
+  }
+
+  for (let i = 0; i < 3; i++) {
+    html += `
+      <div class="shooting-star" style="
+        top:${5 + Math.random() * 40}%;
+        left:${50 + Math.random() * 40}%;
+        animation-delay:${(i * 3.2).toFixed(2)}s;
+      "></div>
+    `;
+  }
+
+  container.innerHTML = html;
+}

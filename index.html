@@ -1,373 +1,134 @@
 <!DOCTYPE html>
 <html lang="th">
-
 <head>
   <meta charset="UTF-8">
-
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  >
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#07061a">
   <title>Galaxy Library - ระบบยืมคืนหนังสือ</title>
 
-  <!-- CSS -->
-  <link rel="stylesheet" href="style.css">
-
-  <!-- Supabase -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-  <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
-  <link
-    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap"
-    rel="stylesheet"
-  >
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="script.js" defer></script>
 </head>
 
 <body>
-
-  <!-- Background stars -->
   <div id="stars"></div>
 
-
   <div class="wrap">
-
-    <!-- Header -->
     <header>
-      <div class="eyebrow">
-        Galaxy Library
+      <div class="topbar">
+        <div class="eyebrow">Galaxy Library</div>
+        <div id="authArea" class="auth-area"></div>
       </div>
 
-      <h1>
-        ระบบยืมคืนหนังสือ
-      </h1>
-
-      <p>
-        ท่องจักรวาลแห่งหนังสือ ยืม-คืนได้ง่ายเหมือนนับดาว
-      </p>
+      <h1>ระบบยืมคืนหนังสือ</h1>
+      <p>ท่องจักรวาลแห่งหนังสือ ยืม-คืนได้ง่ายเหมือนนับดาว</p>
     </header>
 
-
-    <!-- Supabase configuration warning -->
-    <div
-      class="config-banner"
-      id="configBanner"
-    >
-      ⚠️ <b>ยังไม่ได้เชื่อมต่อ Supabase</b>
-      <br>
-
-      แก้ไขค่า
-      <code>SUPABASE_URL</code>
-      และ
-      <code>SUPABASE_ANON_KEY</code>
-      ในไฟล์
-      <code>script.js</code>
-
-      <br>
-
-      และรันคำสั่ง SQL ที่แนบมาในคอมเมนต์ต้นไฟล์
-      <code>script.js</code>
-      บน Supabase SQL Editor ก่อนใช้งาน
+    <div class="config-banner" id="configBanner">
+      ⚠️ <b>ยังไม่ได้เชื่อมต่อ Supabase</b><br>
+      กรุณาตรวจสอบค่า <code>SUPABASE_URL</code> และ <code>SUPABASE_ANON_KEY</code> ใน <code>script.js</code>
     </div>
 
+    <div class="login-banner" id="loginBanner">
+      <div>
+        <strong>โหมดผู้เข้าชม</strong>
+        <span>คุณสามารถดูและค้นหาหนังสือได้ แต่การเพิ่ม/ยืม/คืน/ลบต้องเข้าสู่ระบบ Librarian</span>
+      </div>
+      <button class="btn-google" id="loginButton" type="button">เข้าสู่ระบบด้วย Google</button>
+    </div>
 
-    <!-- Statistics -->
     <div class="stats">
-
       <div class="stat total">
-        <div
-          class="num"
-          id="statTotal"
-        >
-          –
-        </div>
-
-        <div class="lbl">
-          หนังสือทั้งหมด
-        </div>
+        <div class="num" id="statTotal">–</div>
+        <div class="lbl">หนังสือทั้งหมด</div>
       </div>
-
-
       <div class="stat available">
-        <div
-          class="num"
-          id="statAvailable"
-        >
-          –
-        </div>
-
-        <div class="lbl">
-          พร้อมให้ยืม
-        </div>
+        <div class="num" id="statAvailable">–</div>
+        <div class="lbl">พร้อมให้ยืม</div>
       </div>
-
-
       <div class="stat borrowed">
-        <div
-          class="num"
-          id="statBorrowed"
-        >
-          –
-        </div>
-
-        <div class="lbl">
-          ถูกยืมอยู่
-        </div>
+        <div class="num" id="statBorrowed">–</div>
+        <div class="lbl">ถูกยืมอยู่</div>
       </div>
-
     </div>
 
-
-    <!-- Toolbar -->
     <div class="toolbar">
-
-      <!-- Search -->
       <div class="search">
-
-        <input
-          type="text"
-          id="searchInput"
-          placeholder="ค้นหาชื่อหนังสือหรือผู้แต่ง..."
-          autocomplete="off"
-        >
-
+        <input type="text" id="searchInput" placeholder="ค้นหาชื่อหนังสือหรือผู้แต่ง..." autocomplete="off">
       </div>
 
-
-      <!-- Filters -->
       <div class="filters">
-
-        <div
-          class="chip active"
-          data-filter="all"
-        >
-          ทั้งหมด
-        </div>
-
-        <div
-          class="chip"
-          data-filter="available"
-        >
-          ว่าง
-        </div>
-
-        <div
-          class="chip"
-          data-filter="borrowed"
-        >
-          ถูกยืม
-        </div>
-
+        <button class="chip active" data-filter="all" type="button">ทั้งหมด</button>
+        <button class="chip" data-filter="available" type="button">ว่าง</button>
+        <button class="chip" data-filter="borrowed" type="button">ถูกยืม</button>
       </div>
 
-
-      <!-- Add book -->
-      <button
-        class="btn-add"
-        id="openAddModal"
-        type="button"
-      >
-        + เพิ่มหนังสือ
-      </button>
-
+      <button class="btn-add librarian-only" id="openAddModal" type="button">+ เพิ่มหนังสือ</button>
     </div>
 
-
-    <!-- Book grid -->
-    <div
-      class="grid"
-      id="bookGrid"
-    >
-
-      <div class="loading">
-        กำลังโหลดข้อมูลจากจักรวาล...
-      </div>
-
+    <div class="grid" id="bookGrid">
+      <div class="loading">กำลังโหลดข้อมูลจากจักรวาล...</div>
     </div>
-
   </div>
 
-
-  <!-- =========================================================
-       ADD BOOK MODAL
-       ========================================================= -->
-
-  <div
-    class="modal-overlay"
-    id="addModal"
-  >
-
+  <!-- Add Book Modal -->
+  <div class="modal-overlay" id="addModal">
     <div class="modal">
-
-      <h2>
-        ✦ เพิ่มหนังสือใหม่
-      </h2>
-
+      <button class="modal-close" data-close="addModal" type="button">×</button>
+      <h2>✦ เพิ่มหนังสือใหม่</h2>
 
       <div class="field">
-
-        <label for="newTitle">
-          ชื่อหนังสือ
-        </label>
-
-        <input
-          type="text"
-          id="newTitle"
-          placeholder="เช่น สามก๊ก"
-          autocomplete="off"
-        >
-
+        <label for="newTitle">ชื่อหนังสือ</label>
+        <input type="text" id="newTitle" placeholder="เช่น สามก๊ก" maxlength="200">
       </div>
-
 
       <div class="field">
-
-        <label for="newAuthor">
-          ผู้แต่ง
-        </label>
-
-        <input
-          type="text"
-          id="newAuthor"
-          placeholder="เช่น หลอกว้านจง"
-          autocomplete="off"
-        >
-
+        <label for="newAuthor">ผู้แต่ง</label>
+        <input type="text" id="newAuthor" placeholder="เช่น หลอกว้านจง" maxlength="200">
       </div>
-
 
       <div class="field">
-
-        <label for="newCategory">
-          หมวดหมู่ (ไม่บังคับ)
-        </label>
-
-        <input
-          type="text"
-          id="newCategory"
-          placeholder="เช่น วรรณกรรม"
-          autocomplete="off"
-        >
-
+        <label for="newCategory">หมวดหมู่ (ไม่บังคับ)</label>
+        <input type="text" id="newCategory" placeholder="เช่น วรรณกรรม" maxlength="100">
       </div>
-
 
       <div class="modal-actions">
-
-        <button
-          class="btn-cancel"
-          id="cancelAdd"
-          type="button"
-        >
-          ยกเลิก
-        </button>
-
-        <button
-          class="btn-confirm"
-          id="confirmAdd"
-          type="button"
-        >
-          เพิ่มหนังสือ
-        </button>
-
+        <button class="btn-cancel" data-close="addModal" type="button">ยกเลิก</button>
+        <button class="btn-confirm" id="confirmAdd" type="button">เพิ่มหนังสือ</button>
       </div>
-
     </div>
-
   </div>
 
-
-  <!-- =========================================================
-       BORROW BOOK MODAL
-       ========================================================= -->
-
-  <div
-    class="modal-overlay"
-    id="borrowModal"
-  >
-
+  <!-- Borrow Book Modal -->
+  <div class="modal-overlay" id="borrowModal">
     <div class="modal">
+      <button class="modal-close" data-close="borrowModal" type="button">×</button>
+      <h2>✦ ยืมหนังสือ</h2>
 
-      <h2>
-        ✦ ยืมหนังสือ
-      </h2>
-
-
-      <div class="field">
-
-        <label for="borrowerName">
-          ชื่อผู้ยืม
-        </label>
-
-        <input
-          type="text"
-          id="borrowerName"
-          placeholder="ชื่อ-นามสกุล"
-          autocomplete="name"
-        >
-
-      </div>
-
+      <div id="borrowBookName" class="selected-book"></div>
 
       <div class="field">
-
-        <label for="borrowerContact">
-          ติดต่อ (ไม่บังคับ)
-        </label>
-
-        <input
-          type="text"
-          id="borrowerContact"
-          placeholder="เบอร์โทร / อีเมล"
-          autocomplete="off"
-        >
-
+        <label for="borrowerName">ชื่อผู้ยืม</label>
+        <input type="text" id="borrowerName" placeholder="ชื่อ-นามสกุล" maxlength="200">
       </div>
 
+      <div class="field">
+        <label for="borrowerContact">ติดต่อ (ไม่บังคับ)</label>
+        <input type="text" id="borrowerContact" placeholder="เบอร์โทร / อีเมล" maxlength="200">
+      </div>
 
       <div class="modal-actions">
-
-        <button
-          class="btn-cancel"
-          id="cancelBorrow"
-          type="button"
-        >
-          ยกเลิก
-        </button>
-
-        <button
-          class="btn-confirm"
-          id="confirmBorrow"
-          type="button"
-        >
-          ยืนยันการยืม
-        </button>
-
+        <button class="btn-cancel" data-close="borrowModal" type="button">ยกเลิก</button>
+        <button class="btn-confirm" id="confirmBorrow" type="button">ยืนยันการยืม</button>
       </div>
-
     </div>
-
   </div>
 
-
-  <!-- Toast notification -->
-  <div
-    class="toast"
-    id="toast"
-  ></div>
-
-
-  <!-- =========================================================
-       JavaScript
-       IMPORTANT:
-       Supabase is loaded above, then our script runs here.
-       ========================================================= -->
-
-  <script src="script.js"></script>
-
+  <div class="toast" id="toast"></div>
 </body>
-
 </html>
