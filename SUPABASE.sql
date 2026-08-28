@@ -1,18 +1,19 @@
 -- ============================================================
--- GALAXY LIBRARY - COMPLETE SUPABASE DATABASE
--- ============================================================
+-- GALAXY LIBRARY - INVENTORY + GOOGLE ACCOUNTS
 -- Librarian: raminbaandit4@gmail.com
--- Any Google-authenticated account can borrow/return.
--- Normal users cannot add/delete books or see other users' loans.
--- Loans automatically expire after 30 days.
+-- Any authenticated Google user: inspect, borrow, return own loans
+-- Librarian: add, delete, change inventory, return any loan
+-- Automatic return: 30 days
+-- Run this whole file in Supabase SQL Editor.
 -- ============================================================
 
 create extension if not exists pgcrypto;
 
--- Remove the previous version so this is a clean rebuild.
+-- Clean rebuild of the library data.
 drop function if exists public.borrow_book(uuid) cascade;
 drop function if exists public.return_book(uuid) cascade;
 drop function if exists public.expire_overdue_loans() cascade;
+drop function if exists public.set_book_inventory(uuid, integer) cascade;
 drop table if exists public.loans cascade;
 drop table if exists public.books cascade;
 
@@ -21,8 +22,10 @@ create table public.books (
   title text not null,
   author text,
   category text,
-  status text not null default 'available'
-    check (status in ('available', 'borrowed')),
+  isbn text,
+  description text,
+  total_copies integer not null default 1 check (total_copies >= 1),
+  available_copies integer not null default 1 check (available_copies >= 0 and available_copies <= total_copies),
   created_at timestamptz not null default now()
 );
 
@@ -44,88 +47,37 @@ create index loans_due_at_idx on public.loans(due_at) where returned_at is null;
 alter table public.books enable row level security;
 alter table public.loans enable row level security;
 
--- ============================================================
--- BOOK POLICIES
--- ============================================================
-
+-- ================= BOOKS =================
 create policy "Anyone can view books"
-on public.books
-for select
-to anon, authenticated
-using (true);
+on public.books for select to anon, authenticated using (true);
 
 create policy "Librarian can add books"
-on public.books
-for insert
-to authenticated
-with check (
-  lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-);
+on public.books for insert to authenticated
+with check (lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com');
 
 create policy "Librarian can update books"
-on public.books
-for update
-to authenticated
-using (
-  lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-)
-with check (
-  lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-);
+on public.books for update to authenticated
+using (lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com')
+with check (lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com');
 
 create policy "Librarian can delete books"
-on public.books
-for delete
-to authenticated
-using (
-  lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-);
+on public.books for delete to authenticated
+using (lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com');
 
--- ============================================================
--- LOAN POLICIES
--- ============================================================
-
--- Users can see only their own loans.
--- The librarian can see all loans.
+-- ================= LOANS =================
 create policy "Users can view own loans"
-on public.loans
-for select
-to authenticated
+on public.loans for select to authenticated
 using (
   borrowed_by = auth.uid()
-  or lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
+  or lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com'
 );
 
--- The normal frontend uses the secure borrow_book() function,
--- but this policy also prevents users from inserting a loan for
--- somebody else if a direct insert is attempted.
-create policy "Users can create own loans"
-on public.loans
-for insert
-to authenticated
-with check (
-  borrowed_by = auth.uid()
-);
+-- Direct inserts/updates are intentionally blocked below.
+-- Borrow/return must use the security-definer functions.
+revoke insert, update, delete on public.loans from authenticated;
+grant select on public.loans to authenticated;
 
--- The normal frontend uses return_book().
--- This policy allows only the borrower or librarian to update a loan.
-create policy "Borrower or librarian can update loans"
-on public.loans
-for update
-to authenticated
-using (
-  borrowed_by = auth.uid()
-  or lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-)
-with check (
-  borrowed_by = auth.uid()
-  or lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com'
-);
-
--- ============================================================
--- SECURE BORROW FUNCTION
--- ============================================================
-
+-- ================= BORROW =================
 create or replace function public.borrow_book(p_book_id uuid)
 returns void
 language plpgsql
@@ -141,17 +93,16 @@ begin
     raise exception 'You must be signed in';
   end if;
 
-  select * into v_book
-  from public.books
-  where id = p_book_id
-  for update;
+  select * into v_book from public.books where id = p_book_id for update;
+  if not found then raise exception 'Book not found'; end if;
+  if v_book.available_copies <= 0 then raise exception 'No available copies'; end if;
 
-  if not found then
-    raise exception 'Book not found';
-  end if;
-
-  if v_book.status <> 'available' then
-    raise exception 'This book is already borrowed';
+  -- One active copy per user for a title.
+  if exists (
+    select 1 from public.loans
+    where book_id = p_book_id and borrowed_by = auth.uid() and returned_at is null
+  ) then
+    raise exception 'You already borrowed this book';
   end if;
 
   v_name := coalesce(
@@ -160,27 +111,13 @@ begin
     auth.jwt() ->> 'email',
     'Google User'
   );
-
   v_email := auth.jwt() ->> 'email';
 
-  insert into public.loans (
-    book_id,
-    borrower_name,
-    borrower_contact,
-    borrowed_by,
-    borrowed_at,
-    due_at
-  ) values (
-    p_book_id,
-    v_name,
-    v_email,
-    auth.uid(),
-    now(),
-    now() + interval '30 days'
-  );
+  insert into public.loans(book_id, borrower_name, borrower_contact, borrowed_by, borrowed_at, due_at)
+  values(p_book_id, v_name, v_email, auth.uid(), now(), now() + interval '30 days');
 
   update public.books
-  set status = 'borrowed'
+  set available_copies = available_copies - 1
   where id = p_book_id;
 end;
 $$;
@@ -188,10 +125,7 @@ $$;
 revoke all on function public.borrow_book(uuid) from public;
 grant execute on function public.borrow_book(uuid) to authenticated;
 
--- ============================================================
--- SECURE RETURN FUNCTION
--- ============================================================
-
+-- ================= RETURN =================
 create or replace function public.return_book(p_book_id uuid)
 returns void
 language plpgsql
@@ -202,11 +136,9 @@ declare
   v_loan public.loans%rowtype;
   v_is_librarian boolean;
 begin
-  if auth.uid() is null then
-    raise exception 'You must be signed in';
-  end if;
+  if auth.uid() is null then raise exception 'You must be signed in'; end if;
 
-  v_is_librarian := lower(coalesce(auth.jwt() ->> 'email', '')) = 'raminbaandit4@gmail.com';
+  v_is_librarian := lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com';
 
   select * into v_loan
   from public.loans
@@ -217,27 +149,52 @@ begin
   limit 1
   for update;
 
-  if not found then
-    raise exception 'You do not have an active loan for this book';
-  end if;
+  if not found then raise exception 'No active loan for this book'; end if;
 
-  update public.loans
-  set returned_at = now()
-  where id = v_loan.id;
-
-  update public.books
-  set status = 'available'
-  where id = p_book_id;
+  update public.loans set returned_at = now() where id = v_loan.id;
+  update public.books set available_copies = least(total_copies, available_copies + 1) where id = p_book_id;
 end;
 $$;
 
 revoke all on function public.return_book(uuid) from public;
 grant execute on function public.return_book(uuid) to authenticated;
 
--- ============================================================
--- AUTOMATIC 30-DAY EXPIRATION
--- ============================================================
+-- ================= INVENTORY =================
+create or replace function public.set_book_inventory(p_book_id uuid, p_total_copies integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_borrowed integer;
+  v_is_librarian boolean;
+begin
+  if auth.uid() is null then raise exception 'You must be signed in'; end if;
+  v_is_librarian := lower(coalesce(auth.jwt() ->> 'email','')) = 'raminbaandit4@gmail.com';
+  if not v_is_librarian then raise exception 'Librarian only'; end if;
+  if p_total_copies < 1 then raise exception 'Inventory must be at least 1'; end if;
 
+  select count(*)::integer into v_borrowed
+  from public.loans where book_id = p_book_id and returned_at is null;
+
+  if p_total_copies < v_borrowed then
+    raise exception 'Inventory cannot be lower than currently borrowed copies (%)', v_borrowed;
+  end if;
+
+  update public.books
+  set total_copies = p_total_copies,
+      available_copies = p_total_copies - v_borrowed
+  where id = p_book_id;
+
+  if not found then raise exception 'Book not found'; end if;
+end;
+$$;
+
+revoke all on function public.set_book_inventory(uuid, integer) from public;
+grant execute on function public.set_book_inventory(uuid, integer) to authenticated;
+
+-- ================= AUTO RETURN =================
 create or replace function public.expire_overdue_loans()
 returns integer
 language plpgsql
@@ -245,20 +202,18 @@ security definer
 set search_path = public
 as $$
 declare
-  v_count integer;
+  v_count integer := 0;
+  v_loan record;
 begin
-  with expired as (
-    update public.loans
-    set returned_at = now()
-    where returned_at is null
-      and due_at <= now()
-    returning book_id
-  )
-  update public.books b
-  set status = 'available'
-  where b.id in (select book_id from expired);
-
-  get diagnostics v_count = row_count;
+  for v_loan in
+    select id, book_id from public.loans
+    where returned_at is null and due_at <= now()
+    for update
+  loop
+    update public.loans set returned_at = now() where id = v_loan.id;
+    update public.books set available_copies = least(total_copies, available_copies + 1) where id = v_loan.book_id;
+    v_count := v_count + 1;
+  end loop;
   return v_count;
 end;
 $$;
@@ -266,40 +221,15 @@ $$;
 revoke all on function public.expire_overdue_loans() from public;
 grant execute on function public.expire_overdue_loans() to anon, authenticated;
 
--- ============================================================
--- API PRIVILEGES
--- ============================================================
--- Users may read their permitted loans, but loan creation/return is
--- forced through the secure RPC functions above.
-
-revoke insert, update, delete on public.loans from authenticated;
-grant select on public.loans to authenticated;
-
--- ============================================================
--- STARTER BOOKS
--- Delete these INSERT statements if you want an empty library.
--- ============================================================
-
-insert into public.books (title, author, category)
+-- ================= STARTER BOOKS =================
+insert into public.books (title, author, category, description, total_copies, available_copies)
 values
-  ('สามก๊ก', 'หลอกว้านจง', 'วรรณกรรม'),
-  ('ไซอิ๋ว', 'อู๋เฉิงเอิน', 'วรรณกรรม');
+('สามก๊ก', 'หลอกว้านจง', 'วรรณกรรม', 'มหากาพย์ประวัติศาสตร์จีนว่าด้วยสงคราม การเมือง และกลยุทธ์ของยุคสามก๊ก', 2, 2),
+('ไซอิ๋ว', 'อู๋เฉิงเอิน', 'วรรณกรรม', 'การเดินทางไปชมพูทวีปของพระถังซัมจั๋งพร้อมเหล่าศิษย์และเรื่องราวการผจญภัย', 1, 1);
 
 -- ============================================================
--- TRUE BACKGROUND AUTO-RETURN
+-- OPTIONAL AUTOMATIC HOURLY JOB
+-- If pg_cron is available in your Supabase project, uncomment:
+-- create extension if not exists pg_cron;
+-- select cron.schedule('galaxy-library-auto-return','0 * * * *','select public.expire_overdue_loans();');
 -- ============================================================
--- Supabase Cron runs the cleanup every hour, even when nobody has
--- the website open. Supabase documents pg_cron as its recurring
--- Postgres job scheduler.
-
-create extension if not exists pg_cron;
-
-select cron.schedule(
-  'galaxy-library-auto-return',
-  '0 * * * *',
-  $$select public.expire_overdue_loans();$$
-);
-
--- The website also calls expire_overdue_loans() when loading the
--- catalogue, so an expired book is corrected immediately when the
--- site is opened rather than waiting for the next hourly job.
