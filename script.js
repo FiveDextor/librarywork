@@ -2,6 +2,7 @@
    Any Google account: inspect + borrow + return own loans.
    Librarian: raminbaandit4@gmail.com — full inventory management.
 */
+//RELOAD
 
 const SUPABASE_URL = "https://etxezwalaxywjdvvrojc.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_sXSm5tjEOyVRrwYHdh2fVw_DZ26OX0l";
