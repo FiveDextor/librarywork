@@ -12,8 +12,8 @@
     Use the Supabase publishable/anon key here, never the service_role key.
 */
 
-const SUPABASE_URL = "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE";
-const SUPABASE_ANON_KEY = "PASTE_YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY_HERE";
+const SUPABASE_URL = "https://etxezwalaxywjdvvrojc.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_sXSm5tjEOyVRrwYHdh2fVw_DZ26OX0l";
 
 const LIBRARIAN_EMAIL = "raminbaandit4@gmail.com";
 
