@@ -37,7 +37,7 @@
     <div class="login-banner" id="loginBanner">
       <div>
         <strong>โหมดผู้เข้าชม</strong>
-        <span>คุณสามารถดูและค้นหาหนังสือได้ แต่การเพิ่ม/ยืม/คืน/ลบต้องเข้าสู่ระบบ Librarian</span>
+        <span>เข้าสู่ระบบด้วย Google เพื่อยืมและคืนหนังสือ · Librarian สามารถเพิ่ม/ลบหนังสือได้</span>
       </div>
       <button class="btn-google" id="loginButton" type="button">เข้าสู่ระบบด้วย Google</button>
     </div>
@@ -108,19 +108,10 @@
   <div class="modal-overlay" id="borrowModal">
     <div class="modal">
       <button class="modal-close" data-close="borrowModal" type="button">×</button>
-      <h2>✦ ยืมหนังสือ</h2>
+      <h2>✦ ยืนยันการยืม</h2>
 
       <div id="borrowBookName" class="selected-book"></div>
-
-      <div class="field">
-        <label for="borrowerName">ชื่อผู้ยืม</label>
-        <input type="text" id="borrowerName" placeholder="ชื่อ-นามสกุล" maxlength="200">
-      </div>
-
-      <div class="field">
-        <label for="borrowerContact">ติดต่อ (ไม่บังคับ)</label>
-        <input type="text" id="borrowerContact" placeholder="เบอร์โทร / อีเมล" maxlength="200">
-      </div>
+      <p class="borrow-note">หนังสือจะมีกำหนดคืนอัตโนมัติภายใน 30 วันหลังจากยืม</p>
 
       <div class="modal-actions">
         <button class="btn-cancel" data-close="borrowModal" type="button">ยกเลิก</button>

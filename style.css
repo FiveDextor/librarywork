@@ -576,3 +576,11 @@ header p{color:var(--ink-dim);font-size:15px;margin:0}
   .filters{width:100%}
   .chip{flex:1;text-align:center;padding:9px 8px}
 }
+
+.borrow-note{
+  margin:-6px 0 18px;
+  color:var(--ink-dim);
+  font-size:13px;
+  line-height:1.7;
+}
+.hidden{display:none !important;}
